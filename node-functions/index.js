@@ -67,7 +67,7 @@ export const onRequest = async (context) => {
           const j = JSON.parse(text);
           if (p.includes('/comment/') && (!j.count || j.count === 0)) shouldCache = false;
           if (p.includes('/search/') && (!j.animes || j.animes.length === 0)) shouldCache = false;
-          if (p.includes('/bangumi/') && (!j.episodes || (Array.isArray(j.episodes) && j.episodes.length === 0))) shouldCache = false;
+          if (p.includes('/bangumi/') && (!j.bangumi || !j.bangumi.episodes || j.bangumi.episodes.length === 0)) shouldCache = false;
         } catch (e) {
           shouldCache = false;
         }
