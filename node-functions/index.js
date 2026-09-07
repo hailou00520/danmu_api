@@ -55,15 +55,29 @@ export const onRequest = async (context) => {
   // 传递修改后的 request 和 env 给 handleRequest
   const response = await handleRequest(modifiedRequest, env, "edgeone", clientIp);
 
-  // 边缘CDN缓存：对GET请求的弹幕/搜索/剧集接口加缓存头，二次访问直接从边缘节点返回
+  // 边缘CDN缓存：只对有内容的GET响应加缓存头，避免缓存空结果
   if (request.method === 'GET' && response.status === 200) {
     try {
       const url = new URL(request.url);
       const p = url.pathname;
       if (p.includes('/comment/') || p.includes('/search/') || p.includes('/bangumi/')) {
+        const text = await response.text();
+        let shouldCache = true;
+        try {
+          const j = JSON.parse(text);
+          if (p.includes('/comment/') && (!j.count || j.count === 0)) shouldCache = false;
+          if (p.includes('/search/') && (!j.animes || j.animes.length === 0)) shouldCache = false;
+          if (p.includes('/bangumi/') && (!j.episodes || (Array.isArray(j.episodes) && j.episodes.length === 0))) shouldCache = false;
+        } catch (e) {
+          shouldCache = false;
+        }
         const newHeaders = new Headers(response.headers);
-        newHeaders.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
-        return new Response(response.body, {
+        if (shouldCache) {
+          newHeaders.set('Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
+        } else {
+          newHeaders.set('Cache-Control', 'no-store');
+        }
+        return new Response(text, {
           status: response.status,
           statusText: response.statusText,
           headers: newHeaders
