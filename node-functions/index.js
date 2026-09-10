@@ -2,7 +2,11 @@ import { handleRequest } from '../danmu_api/worker.js';
 
 export const onRequest = async (context) => {
   const { request, env } = context;
-
+  // HEAD 请求直接返回200（用于播放器连通性测试，如Hills Lite）
+  if (request.method === 'HEAD') {
+    return new Response(null, { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+  
   // 获取协议和主机名，使用属性访问而非 get 方法
   const baseUrl = `https://localhost`;
 
