@@ -5,4 +5,5 @@ export const onRequestPost   = onRequest;
 export const onRequestPut    = onRequest;
 export const onRequestPatch  = onRequest;
 export const onRequestDelete = onRequest;
+export const onRequestHead   = onRequest;
 export { onRequest }; // 复用 index.js 的 onRequest
