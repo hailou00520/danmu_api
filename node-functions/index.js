@@ -28,16 +28,25 @@ async function gzipCompress(text) {
 }
 
 function readHeader(request, name) {
+  const lower = name.toLowerCase();
   try {
     if (request.headers && typeof request.headers.get === 'function') {
-      return request.headers.get(name) || '';
+      const v = request.headers.get(name);
+      if (v) return v;
     }
   } catch (e) { /* fall through */ }
   try {
-    return (request.headers && request.headers[name]) || '';
-  } catch (e) {
-    return '';
-  }
+    const h = request.headers || {};
+    if (typeof h.forEach === 'function') {
+      let out = '';
+      h.forEach((v, k) => { if (String(k).toLowerCase() === lower) out = v; });
+      if (out) return out;
+    }
+    for (const k of Object.keys(h)) {
+      if (k.toLowerCase() === lower) return String(h[k]);
+    }
+  } catch (e) { /* ignore */ }
+  return '';
 }
 
 export const onRequest = async (context) => {
@@ -134,7 +143,10 @@ export const onRequest = async (context) => {
         // 大 JSON 且客户端接受 gzip 时压缩下发（见文件头说明）；X-Danmu-Gzip 标注实际路径便于线上核查
         let body = text;
         const acceptEncoding = readHeader(request, 'accept-encoding');
-        if (!acceptEncoding.includes('gzip')) {
+        newHeaders.set('X-Danmu-Ae', acceptEncoding ? acceptEncoding.slice(0, 60) : 'none');
+        // CDN 可能吞掉 Accept-Encoding：为空且是弹幕正文路径时按播放器处理（播放器均支持 gzip）
+        const assumeGzip = acceptEncoding === '' && p.includes('/comment/');
+        if (!acceptEncoding.includes('gzip') && !assumeGzip) {
           newHeaders.set('X-Danmu-Gzip', 'client-no-gzip');
         } else if (text.length < 65536) {
           newHeaders.set('X-Danmu-Gzip', 'small');
@@ -147,7 +159,7 @@ export const onRequest = async (context) => {
               body = r.bytes;
               newHeaders.set('Content-Encoding', 'gzip');
               newHeaders.delete('Content-Length');
-              newHeaders.set('X-Danmu-Gzip', r.via);
+              newHeaders.set('X-Danmu-Gzip', assumeGzip ? r.via + '+assumed' : r.via);
             } else {
               newHeaders.set('X-Danmu-Gzip', 'unavailable');
             }
