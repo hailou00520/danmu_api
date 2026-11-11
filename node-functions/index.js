@@ -144,8 +144,9 @@ export const onRequest = async (context) => {
         let body = text;
         const acceptEncoding = readHeader(request, 'accept-encoding');
         newHeaders.set('X-Danmu-Ae', acceptEncoding ? acceptEncoding.slice(0, 60) : 'none');
-        // CDN 可能吞掉 Accept-Encoding：为空且是弹幕正文路径时按播放器处理（播放器均支持 gzip）
-        const assumeGzip = acceptEncoding === '' && p.includes('/comment/');
+        // CDN 会把 Accept-Encoding 改写成 identity，函数永远看不到客户端真实编码支持；
+        // 弹幕正文路径一律按播放器处理并压缩（播放器网络栈均支持 gzip），否则大响应必被时长上限截断
+        const assumeGzip = !acceptEncoding.includes('gzip') && p.includes('/comment/');
         if (!acceptEncoding.includes('gzip') && !assumeGzip) {
           newHeaders.set('X-Danmu-Gzip', 'client-no-gzip');
         } else if (text.length < 65536) {
