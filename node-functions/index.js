@@ -1,12 +1,31 @@
 import { handleRequest } from '../danmu_api/worker.js';
 
+// gzip 压缩（可选能力）：动态加载 node:zlib，加载失败时自动降级为不压缩，绝不让压缩问题拖垮主流程。
+// 背景：EdgeOne 函数响应流存在约 30 秒的时长上限，且流式下发速度约 120KB/s，
+// 未压缩的大弹幕 JSON（4MB+）会在传完前被切断，客户端拿到截断的坏 JSON。
+// gzip 后体积约 1/6，可在时限内传完，同时大幅提升弱网/跨境下的加载速度。
+const gzipSyncReady = import('node:zlib').then(m => m.gzipSync).catch(() => null);
+
+function readHeader(request, name) {
+  try {
+    if (request.headers && typeof request.headers.get === 'function') {
+      return request.headers.get(name) || '';
+    }
+  } catch (e) { /* fall through */ }
+  try {
+    return (request.headers && request.headers[name]) || '';
+  } catch (e) {
+    return '';
+  }
+}
+
 export const onRequest = async (context) => {
   const { request, env } = context;
   // HEAD 请求直接返回200（用于播放器连通性测试，如Hills Lite）
   if (request.method === 'HEAD') {
     return new Response(null, { status: 200, headers: { 'Content-Type': 'application/json' } });
   }
-  
+
   // 获取协议和主机名，使用属性访问而非 get 方法
   const baseUrl = `https://localhost`;
 
@@ -88,7 +107,26 @@ export const onRequest = async (context) => {
         } else {
           newHeaders.set('Cache-Control', 'no-store');
         }
-        return new Response(text, {
+        // 按 Accept-Encoding 区分缓存变体，避免把压缩版发给不接受压缩的客户端
+        newHeaders.set('Vary', 'Accept-Encoding');
+
+        // 大 JSON 且客户端接受 gzip 时压缩下发（见文件头说明）
+        let body = text;
+        const acceptEncoding = readHeader(request, 'accept-encoding');
+        if (acceptEncoding.includes('gzip') && text.length >= 65536 && !newHeaders.get('Content-Encoding')) {
+          try {
+            const gzipSync = await gzipSyncReady;
+            if (gzipSync) {
+              body = gzipSync(Buffer.from(text, 'utf8'));
+              newHeaders.set('Content-Encoding', 'gzip');
+              newHeaders.delete('Content-Length');
+            }
+          } catch (e) {
+            console.error('gzip compress error (fallback to identity):', e);
+            body = text;
+          }
+        }
+        return new Response(body, {
           status: response.status,
           statusText: response.statusText,
           headers: newHeaders
