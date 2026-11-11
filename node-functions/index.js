@@ -1,10 +1,31 @@
 import { handleRequest } from '../danmu_api/worker.js';
 
-// gzip 压缩（可选能力）：动态加载 node:zlib，加载失败时自动降级为不压缩，绝不让压缩问题拖垮主流程。
+// gzip 压缩（可选能力，多路径兜底）：node:zlib → zlib → CompressionStream，全部不可用时不压缩。
 // 背景：EdgeOne 函数响应流存在约 30 秒的时长上限，且流式下发速度约 120KB/s，
 // 未压缩的大弹幕 JSON（4MB+）会在传完前被切断，客户端拿到截断的坏 JSON。
 // gzip 后体积约 1/6，可在时限内传完，同时大幅提升弱网/跨境下的加载速度。
-const gzipSyncReady = import('node:zlib').then(m => m.gzipSync).catch(() => null);
+const gzipHelpers = (async () => {
+  try {
+    const m = await import('node:zlib');
+    if (m && m.gzipSync) return { kind: 'node:zlib', fn: (buf) => m.gzipSync(buf) };
+  } catch (e) { /* try next */ }
+  try {
+    const m = await import('zlib');
+    if (m && m.gzipSync) return { kind: 'zlib', fn: (buf) => m.gzipSync(buf) };
+  } catch (e) { /* try next */ }
+  return null;
+})();
+
+async function gzipCompress(text) {
+  const h = await gzipHelpers;
+  if (h) return { bytes: h.fn(Buffer.from(text, 'utf8')), via: h.kind };
+  if (typeof CompressionStream === 'function' && typeof Blob === 'function') {
+    const stream = new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'));
+    const buf = await new Response(stream).arrayBuffer();
+    return { bytes: new Uint8Array(buf), via: 'CompressionStream' };
+  }
+  return null;
+}
 
 function readHeader(request, name) {
   try {
@@ -110,19 +131,29 @@ export const onRequest = async (context) => {
         // 按 Accept-Encoding 区分缓存变体，避免把压缩版发给不接受压缩的客户端
         newHeaders.set('Vary', 'Accept-Encoding');
 
-        // 大 JSON 且客户端接受 gzip 时压缩下发（见文件头说明）
+        // 大 JSON 且客户端接受 gzip 时压缩下发（见文件头说明）；X-Danmu-Gzip 标注实际路径便于线上核查
         let body = text;
         const acceptEncoding = readHeader(request, 'accept-encoding');
-        if (acceptEncoding.includes('gzip') && text.length >= 65536 && !newHeaders.get('Content-Encoding')) {
+        if (!acceptEncoding.includes('gzip')) {
+          newHeaders.set('X-Danmu-Gzip', 'client-no-gzip');
+        } else if (text.length < 65536) {
+          newHeaders.set('X-Danmu-Gzip', 'small');
+        } else if (newHeaders.get('Content-Encoding')) {
+          newHeaders.set('X-Danmu-Gzip', 'already-encoded');
+        } else {
           try {
-            const gzipSync = await gzipSyncReady;
-            if (gzipSync) {
-              body = gzipSync(Buffer.from(text, 'utf8'));
+            const r = await gzipCompress(text);
+            if (r) {
+              body = r.bytes;
               newHeaders.set('Content-Encoding', 'gzip');
               newHeaders.delete('Content-Length');
+              newHeaders.set('X-Danmu-Gzip', r.via);
+            } else {
+              newHeaders.set('X-Danmu-Gzip', 'unavailable');
             }
           } catch (e) {
             console.error('gzip compress error (fallback to identity):', e);
+            newHeaders.set('X-Danmu-Gzip', 'error');
             body = text;
           }
         }
