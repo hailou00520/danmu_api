@@ -32,15 +32,22 @@ export const onRequest = async (context) => {
   }
 
   // 创建新的 request 对象，替换 url
-  const modifiedRequest = new Request(fullUrl, {
+  // 修复：原写法 body: JSON.stringify(request.body) 会把请求体流序列化成 {}，
+  // 导致 POST 接口（match / segmentcomment）丢 body。改为仅非 GET/HEAD 时
+  // 把 body 原样读出后转发（读成 ArrayBuffer，避免流式 body 在 Node 运行时需要 duplex 的坑）。
+  const requestInit = {
     method: request.method,
     headers: request.headers,
-    body: JSON.stringify(request.body),
     redirect: request.redirect,
     credentials: request.credentials,
     cache: request.cache,
     mode: request.mode
-  });
+  };
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const rawBody = await request.arrayBuffer();
+    if (rawBody.byteLength > 0) requestInit.body = rawBody;
+  }
+  const modifiedRequest = new Request(fullUrl, requestInit);
 
   // 获取客户端 IP 地址
   let clientIp = 'unknown';
